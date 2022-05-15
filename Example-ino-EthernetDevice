@@ -1,0 +1,1212 @@
+/*Revision note
+ * Samong-PLC MEGA with Ethernet-Core with Realtime
+ * Version 1.0 Date July 17,2019
+ * Paipat Samanchuen
+ * 
+ */
+#include <SPI.h>
+#include <SD.h>  // Datalogger on Ehthernet Shield 10/8/2018 Paipat
+#include <Ethernet.h>
+#include <Wire.h>  
+#include <LCD.h>
+#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal.h>
+#include "DHT.h"  // temperature sensor
+#include <PZEM004T.h>  // Energy meter Through Serial 3 on Mega
+#include <SoftwareSerial.h>  // 
+#include <ArduinoJson.h>
+#include <NTPClient.h>
+#include <Arduino.h>
+#include "RTClib.h"
+#include <Adafruit_GFX.h>
+#include <Adafruit_AM2315.h>
+
+float flowfactor;
+byte sensorInterrupt = 0;  // 0 = digital pin 2
+#define FlowMeterPulsePerSecondPerLiter 6.9
+//#define FlowMeterPulsePerSecondPerLiter 7.5
+float FlowCalculationDuration =1000;
+float FlowCalculationStartTime;
+volatile float PulseCount;
+float LPM;
+int LPMdecimal;
+
+/// Pin for Manual Auto Raspberry Pi and cooling fan //
+#define FanPin 25 
+#define RaspberryPin 23
+#define ManualModePin 38
+#define AutoModePin 39
+//#define DHTPIN A12
+//#define DHTTYPE DHT22
+//DHT dht(DHTPIN, DHTTYPE);
+
+////// Temp-Mositure Sensor /// AM2315
+// Connect RED of the AM2315 sensor to 5.0V
+// Connect BLACK to Ground
+// Connect WHITE to i2c clock
+// Connect YELLOW to i2c data
+
+////////// Auto Manual Mode  ////////
+int AutoMode = 0;
+
+///// Set time for posting tp server ///
+int New_post_time = 0;
+int post_time = 0; 
+int Time_check = 0;
+int post_duration = 2 ;  // posting interval every 2 minutes
+int pzemtime= 1000;
+int tempp = 0;
+int AutoModePinValue ;
+int ManualModePinValue ;
+String Modeselect ;
+String master_state;
+// RTC
+RTC_Millis rtc;
+////
+Adafruit_AM2315 am2315; // object AM2315 temp moisture sensor
+
+/////////// Ethernet Shield //////////////////////////////////////
+
+// Enter a MAC address for your controller below.
+// Newer Ethernet shields have a MAC address printed on a sticker on the shield
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+
+// fill in an available IP address on your network here,
+// for manual configuration:
+IPAddress ip2(192, 168, 1, 176);  // set ip2 192,168,1,176  for Ethernet shield
+
+// fill in your Domain Name Server address here:
+IPAddress myDns(1, 1, 1, 1);
+
+// initialize the library instance:
+// with the IP address and port of the server 
+// that you want to connect to (port 80 is default for HTTP):
+
+EthernetClient client;
+const char* host = "otrixiot.com";
+const char* code = "xxxxxxxxx";
+const char* dID = "1xxxx";
+
+String led1 ;
+String led2 ;
+String led3 ;
+/////////////////////// end ethernet shield /////
+//// next LCD initial /////
+
+LiquidCrystal_I2C lcd(0x27,2,1,0,4,5,6,7,3,POSITIVE);
+float LCDDisplayPeriod = 2000;
+float LastLCDDisplay;
+float ThisLCDDisplay;
+//// energy meter setup ///
+PZEM004T pzem(&Serial2);  // Serial Rx3,TX3 on ATMega  energy meter
+//change from serial3 to serial 1 17 Sep 2019
+IPAddress ip(192,168,1,175);  // ip for pzem unit  192,168,1,175
+
+bool pzemrdy = false;
+
+/// end PZEM ////
+/// prepare host url  ////
+String url;   // ใช้สำหรับ โปรแกรมส่วนการส่ง
+int count = 0;
+int httpPort = 80;
+float flow55 = 0;
+////
+
+const int chipSelect = 4;
+
+/// control panel condition //// 
+String panelstate   = "OFF";
+float vHumidity = 0;
+float vTemperature = 0;
+float vTemperature1 = 0;
+float vTemperature2 = 0;
+float data1=59;
+float data2=33;
+float data3=33;
+float data4=33;
+float data5=150;
+float data6=350;
+float data7=4000;
+float data8=7500;
+float data9=33;
+float data10=-1000.345;
+float data11=0.345;
+float data12=3000.345;
+float data13=5000.345;
+float data14=9900.345;
+float data15=10000.345;
+float data16=-1000.345;
+float data17=3500.345;
+float data18=5000.999;
+float data19=10000.000;
+float data20=10000.999;
+float vPower=0;
+float vVolt=0;
+float iamp=0;
+float vEnergy=0;
+
+////  RTC Setup
+void RTC_setup () {
+    Serial.begin(115200);
+    // following line sets the RTC to the date & time this sketch was compiled
+    rtc.begin(DateTime(F(__DATE__), F(__TIME__)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
+}
+
+
+///
+void AM2315_setup() 
+{
+  Serial.begin(115200);
+  while (!Serial) {
+    delay(10);
+  }
+  Serial.println("AM2315 Test!");
+
+  if (! am2315.begin()) {
+     Serial.println("Sensor not found, check wiring & pullups!");
+     while (1);
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////
+void rain_sensor_setup() 
+  {
+  PulseCount = 0;
+  Serial.begin(115200);  
+  LPM               = 0;
+  LPMdecimal        = 2;
+  attachInterrupt(sensorInterrupt, pulseCounter2, CHANGE);
+  FlowCalculationStartTime = millis();
+  }
+void setup() 
+{
+
+  String BCS = "On"; 
+  //RTC_setup();
+  //AM2315_setup();
+  //rain_sensor_setup();
+  //setup_Display();
+  setup_PinMode();
+  setup_SerialCommunication();
+  setup_NetworkConnection();
+  //setup_DataLogger();
+  //setup_Sensor_Box_Temperature();
+
+}
+
+void setup_Controllino_RTC() 
+{
+    
+}
+
+//////////////////////////////////////// End SETUP  ///////////////////////////
+void(* resetFunc) (void) = 0;
+
+void setup_Display()
+{
+  lcd.begin(20,4);
+  lcd.setCursor(0,0);
+  lcd.print("IOT by ");
+  lcd.setCursor(0,2);
+  lcd.print("Samong Thailand");
+  lcd.setCursor(0,3);
+  lcd.print("Tel. 091-6982616");
+  delay(1000);
+  
+}
+
+void setup_PinMode()
+{
+ 
+  pinMode(FanPin,OUTPUT);
+  pinMode(RaspberryPin,OUTPUT); // pin 23
+  pinMode(ManualModePin,INPUT);  // ขาวัดโหมด manual  pin 38
+  pinMode(AutoModePin,INPUT); // ขาวัดโหมด Auto  pin 39
+ // pinMode(DHTPIN,INPUT);
+}
+
+void setup_SerialCommunication()
+{
+// Open serial communications and wait for port to open:
+   Serial.begin(115200);
+//   mySerial.begin(115200);
+}
+
+void setup_NetworkConnection()
+{
+  // give the ethernet module time to boot up:
+  delay(1000);
+  // start the Ethernet connection using a fixed IP address and DNS server:
+  Ethernet.begin(mac, ip2, myDns);
+  // print the Ethernet board/shield's IP address:
+  Serial.print("My IP address: ");
+  Serial.println(Ethernet.localIP());
+  EthernetClient Client;
+}
+
+
+void setup_DataLogger()
+{
+/*
+  Serial.print("Initializing SD card...");
+
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    return;
+  }
+  Serial.println("card initialized.");
+*/
+}
+
+void setup_Sensor_Box_Temperature()
+{
+//  dht.begin();
+}
+
+//อ่านสถานะมาเก็บไว้ในตัวแปร
+int scan_WorkMode()
+{
+//  ManualModePinValue = digitalRead(ManualModePin);
+//  AutoModePinValue = digitalRead(AutoModePin);
+//  AutoMode = AutoModePinValue;
+//  AutoModeOn = AutoModeCommand;
+
+  if (AutoModePinValue == HIGH) 
+  { 
+    Modeselect = "Auto";  
+    return 1;
+  }
+  else if (ManualModePinValue == HIGH) 
+  {
+    Modeselect = "Manual";
+    return 1; 
+  }
+  else 
+  {
+    Modeselect = "OFF";
+    return 2;
+  }   
+}
+
+
+void scanSensor_Energy()
+{
+  
+  Serial.begin(115200);
+  // while (!pzemrdy) {
+      Serial.println("Connecting to PZEM...");
+      pzemrdy = pzem.setAddress(ip);
+      delay(pzemtime); // for pzem connection time
+  //}
+  delay(1000);
+  
+  vVolt = pzem.voltage(ip);
+  if (vVolt < 0.0) vVolt = 0.0;
+  Serial.print(vVolt);Serial.print("V; ");
+ 
+  iamp = pzem.current(ip);
+  if(iamp >= 0.0){ Serial.print(iamp);Serial.print("A; "); }
+  
+  vPower = pzem.power(ip);
+  if(vPower >= 0.0){ Serial.print(vPower);Serial.print("W; "); }
+  
+  vEnergy = pzem.energy(ip)/1000; // devide by 1000 to convert to kWhr
+  if(vEnergy >= 0.0){ Serial.print(vEnergy);Serial.print("kWhr; "); }
+  data1 = vVolt+200;
+  data2 = iamp+50;
+  data3 = vPower+150;
+  data4 = vPower/(data1*data2);
+  data5 = vEnergy;
+}
+
+/*
+void scanSensor_PumpStatus()
+{
+     Serial.print(" Scanning  pump statis ..");
+     int workMode2 = scan_WorkMode();
+      if (workMode2 = 2)
+        {
+          get_PumpStatus_Auto();
+        }
+      if (workMode2 = 1)    
+        {
+          Serial.print("...In get pump status manua mode...");
+          get_PumpStatus_Manual();
+        }
+        else
+        {
+          get_PumpStatus_Off();
+        }
+}
+*/
+void scanSensor_Flowrate()
+{
+  //ใช้เป็น Interrupt แทน
+}
+
+/*
+void scanSensor_Box_Temperature()
+{
+   tempp= analogRead(DHTPIN);
+   Serial.print("tempp  ...:"); Serial.println(tempp);
+   
+// Wait a few seconds between measurements.
+  delay(500);
+
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  vHumidity = dht.readHumidity();
+  
+  // Read temperature as Celsius (the default)
+  vTemperature1 = dht.readTemperature();
+
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(vHumidity) || isnan(vTemperature1) || isnan(vTemperature2)) {
+    Serial.println("Failed to read from DHT sensor!");
+    //return;
+    vHumidity = 0;
+    vTemperature1 = 0;
+
+  }
+else 
+{
+  if (vTemperature1>37){
+    digitalWrite(FanPin,HIGH);
+  }
+}
+ data2 = vTemperature1;
+ data1 = vHumidity;
+ Serial.print("Temp/Humid ");Serial.print(data1);Serial.println(data2);
+}
+*/
+
+void scanAllSensor()
+{
+//  scanSensor_Energy();
+ // scanSensor_Box_Temperature();
+ AM2315_loop();
+}
+
+//แสดงสถานะการทำงานของระบบ
+void displayToLCD_Title()
+{
+}
+
+void displayToLCD_WorkMode()
+{
+  lcd.clear();
+  lcd.begin(20,4);
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("Control Panel check");
+  lcd.setCursor(0,2);
+  lcd.print("Mode    :");
+  lcd.setCursor(10,2);
+ // lcd.print(Modeselect);
+  lcd.setCursor(0,3);
+
+  lcd.print("Temp 'c :");
+  lcd.setCursor(10,3);
+  //lcd.print(vTemperature1);
+}
+
+void displayToLCD_Energy()
+{
+  
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("    Energy Meter");
+  lcd.setCursor(0,1);
+  lcd.print("Volt   :        V");
+  lcd.setCursor(0,2);
+  lcd.print("Amp    :        A");
+  lcd.setCursor(0,3);
+  lcd.print("Energy :        kWhr");
+  lcd.setCursor(8,1);
+  lcd.print(vVolt);
+  lcd.setCursor(8,2);
+  lcd.print(iamp);
+  lcd.setCursor(8,3);
+  lcd.print(vEnergy);
+}
+
+void displayToLCD_All_PumpStatus()
+{
+  lcd.clear();
+  lcd.begin(20,4);
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("Pump Status");
+
+  /*
+  lcd.setCursor(0,1);
+  lcd.print("P0: ");
+  lcd.setCursor(3,1);
+  lcd.print(Pump0Status);
+  lcd.setCursor(10,1);
+  lcd.print("P1: ");
+  lcd.setCursor(13,1);
+  lcd.print(Pump1Status);
+
+  lcd.setCursor(0,2);
+  lcd.print("P2: ");
+  lcd.setCursor(3,2);
+  lcd.print(Pump2Status);
+  lcd.setCursor(10,2);
+  lcd.print("P3: ");
+  lcd.setCursor(13,2);
+  lcd.print(Pump3Status);
+  lcd.setCursor(0,3);
+  lcd.print("P4: ");
+  lcd.setCursor(3,3);
+  lcd.print(Pump4Status);
+  lcd.setCursor(10,3);
+  lcd.print("P5: ");
+  lcd.setCursor(13,3);
+  lcd.print(Pump5Status);
+  */
+}
+
+void displayToLCD_Flowrate()
+{
+  lcd.clear();
+  lcd.begin(20,4);
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("Flow rate L/MIN");
+  lcd.setCursor(0,3);
+  lcd.print("Total Flow : ");
+  lcd.setCursor(14,3);
+ 
+}
+
+void displayToLCD_Flowrate5()
+{
+  
+}
+
+void displayToLCD_pH_EC_A()
+{
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Tamod Station");
+  lcd.setCursor(0,1);
+  lcd.print(" pH         : ");
+  lcd.setCursor(0,2);
+  lcd.print(" EC  us/cm  : ");
+  lcd.setCursor(0,3);
+  lcd.print(" Temp 'c    : ");
+  lcd.setCursor(14,1);
+  lcd.setCursor(14,3);
+//  lcd.print(temperature);
+  
+}
+
+void displayToLCD_pH_EC_B()
+{
+}
+
+void displayToLCD_Inlet_Outlet()
+{
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("        inlet outlet");
+  lcd.setCursor(0,1);
+  lcd.print("pH    : ");
+  lcd.setCursor(0,2);
+  lcd.print("EC    : ");
+  lcd.setCursor(0,3);
+  lcd.print("Flow  : ");
+  lcd.setCursor(9,1);
+  lcd.print("#na");
+  lcd.setCursor(9,2);
+  lcd.print("#na");
+  lcd.setCursor(9,3);
+  lcd.print("#na");
+
+  
+}
+
+void displayToLCD_TankLevel()
+{
+  lcd.clear();
+  lcd.begin(20,4);
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("Tank Level");
+  lcd.setCursor(0,1);
+  lcd.print("T#0:");
+
+}
+
+void displayToLCD_All_aNodeVoltage()
+{
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print(" Cell Voltage (mV)");
+  lcd.setCursor(0,1);
+  lcd.print("R1 : ");
+  lcd.setCursor(0,2);
+  lcd.print("R2 : ");
+  lcd.setCursor(0,3);
+  lcd.print("R3 : ");
+  lcd.setCursor(11,1); 
+  lcd.print("R4 : ");
+  lcd.setCursor(11,2);
+  lcd.print("R5 : ");
+ 
+  
+}
+
+void displayToSerial_Title()
+{
+}
+
+void display_LCD_data()
+{
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("        inlet outlet");
+  lcd.setCursor(0,1);
+  lcd.print("Temp. : ");
+  lcd.setCursor(0,2);
+  lcd.print("EC    : ");
+  lcd.setCursor(0,3);
+  lcd.print("Flow  : ");
+  lcd.setCursor(9,1);
+  lcd.print(data1);
+  lcd.setCursor(9,2);
+  lcd.print(data7);
+  lcd.setCursor(9,3);
+  lcd.print(data9);
+
+  
+}
+void displayToSerial_WorkMode()
+{
+  Serial.println(" Mode check : ");
+  Serial.print("Manual mode switch :");
+//  Serial.println(ManualModePinValue);
+
+  Serial.print("Automode switch  : ");
+//  Serial.println(AutoModePinValue);
+
+  Serial.print("Mode Select  ");
+//  Serial.println(Modeselect);
+}
+
+void displayToSerial_Energy()
+{
+}
+
+void displayToSerial_Flowrate()
+{
+ 
+}
+
+
+void displayToSerial_pH_EC_A()
+{
+   
+}
+
+void displayToSerial_pH_EC_B()
+{
+}
+
+void displayToSerial_Inlet_Outlet()
+{
+  
+}
+
+void displayToSerial_CalculateFlow()
+{
+  
+}
+
+void displayToSerial_PumpStatus()
+{
+  
+}
+
+void displayToSerial_TankLevel()
+{
+  
+}
+
+void displayAllSystemStatus()
+{
+  displayAllSystemStatusToLCD();
+  displayAllSystemStatusToSerial();
+}
+
+void displayAllSystemStatusToLCD()
+{
+  int timeA = 4000;
+
+  displayToLCD_Title(); delay(timeA);
+  displayToLCD_Energy(); delay(timeA);
+  displayToLCD_All_PumpStatus(); delay(timeA);
+  displayToLCD_Flowrate(); delay(timeA);
+  displayToLCD_Flowrate5(); delay(timeA);
+
+  displayToLCD_pH_EC_A(); delay(timeA);
+ // displayToLCD_pH_EC_B(); 
+  displayToLCD_Inlet_Outlet();
+  displayToLCD_TankLevel(); delay(timeA);
+  displayToLCD_All_aNodeVoltage(); delay(timeA);
+}
+
+void displayAllSystemStatusToSerial()
+{
+  
+}
+
+/*void saveSystemStatusToDataLogger()
+{
+      ////////////////// Datlo logger loop  ////////////////////////
+    if (!SD.begin(chipSelect)) 
+      {
+        //Serial.println("Card failed... or not available");
+        // don't do anything more:
+       // return;
+       }
+      else 
+       { 
+        //Serial.println("card initialized.");
+       }
+    
+    // make a string for assembling the data to log:
+    
+    String dataString = "";
+    dataString = String(phinlet)+","+String(ecinlet)+","+String(flowinlet)+","+String(flow1)+","+String(flow2)+","+String(flow3)
+       +","+String(flow4)+","+String(flow5)+","+String(flow6)+String(phoutlet)+","+String(ecoutlet)+","+String(volt)+","+String(kw)+
+       ","+String(amp)+","+String(kwhr)+","+String(codinlet)+","+String(codoutlet)+","+String(temp)+","+String(humid)+","+String(rmv1)+
+       ","+String(rmv2)+","+String(rmv3)+","+String(rmv4)+","+String(rmv5)+","+String(tds1)+","+String(tds2);
+    
+      // open the file. note that only one file can be open at a time,
+      // so you have to close this one before opening another.
+      /////
+    
+      /////
+     File dataFile = SD.open("datalog.txt", FILE_WRITE);
+    
+      // if the file is available, write to it:
+      if (dataFile) {
+        dataFile.println(dataString);
+        dataFile.close();
+        // print to the serial port too:
+        //Serial.println(dataString);
+      }
+      // if the file isn't open, pop up an error:
+      else {
+        //Serial.println("error opening datalog.txt");
+      }
+     
+}
+*/
+
+void readControlCommandFromServer()
+{
+ Serial.print("Read control command from Server ... connecting to ");
+ Serial.println(host);
+
+// if there's incoming data from the net connection.
+  // send it out the serial port.  This is for debugging
+  // purposes only:
+ 
+client.stop();
+delay(1000);
+ 
+//EthernetClient client;
+
+if (client.connect(host, 80)) 
+  {
+    Serial.println("reconnecting...");
+     //http://otrixiot.com/api/getRealyStatus/185/AISAus2020/abZYrshRYR243askdSKSKSK5646dkfmTURDsand
+         url = "/api/getRealyStatus/"+String(dID)+"/"+String(code)+"/"+"abZYrshRYR243askdSKSKSK5646dkfmTURDsand";
+         //url = "/api/readLast/IOT_API_KEY_BY_ADMIN/59/CTN-001";
+         Serial.print("Requesting URL: ");
+         Serial.println(url);
+    
+         client.print(String("GET ") + url + " HTTP/1.1\r\n" +
+                 "Host: " + host + "\r\n" + 
+                 "Connection: close\r\n\r\n");
+         delay(2000);
+         
+         String section="header";
+         
+         while(client.available())
+         {
+            //Serial.println("Connection available ");
+            String line = client.readStringUntil('\r');
+            //Serial.print(line);
+            // we’ll parse the HTML body here
+            if (section=="header") 
+              { // headers..
+           
+                  if (line=="\n") 
+                    { // skips the empty space at the beginning 
+                      section="json";
+                    }
+              }
+            else if (section=="json") 
+              {  // print the good stuff
+                  section="ignore";
+                  String result = line.substring(1);
+                             
+                  // Parse JSON
+                  int size = result.length() + 1;
+                  char json[size];
+                  result.toCharArray(json, size);
+                  StaticJsonBuffer<1500> jsonBuffer;
+                  JsonObject& json_parsed = jsonBuffer.parseObject(json);
+                  if (!json_parsed.success())
+                    {
+                      Serial.println("parseObject() failed");
+                      return;
+                    }
+                      Serial.println("parseObject() OK ...");
+                      Serial.println(result); // show all json found
+                      //String led = json_parsed["led"][0]["status"];
+                      String master_state = json_parsed["result"]["master_status"];
+                      String led1 = json_parsed["result"]["relayStatus"]["data1"];
+                      String led2 = json_parsed["result"]["relayStatus"]["data2"];
+                      String led3 = json_parsed["result"]["relayStatus"]["data3"];
+                      
+                      // string led = json_parsed["table name""][array number]["value of field"]
+                      Serial.println("Read control led 1, 2, 3 ...");
+                      Serial.println(led1);
+                      Serial.println(led2);
+                      Serial.println(led3);
+                   
+            
+             } // if found json
+          } // end while client available
+          
+    }
+    // end if host connected
+   
+    else 
+    {
+      // if you couldn't make a connection:
+      Serial.println("connection failed read server 1");
+    }
+   
+  client.stop();
+  delay(1000);
+
+}
+// ==  end read control from server ===
+void readControlCommandFromServer_2()
+{
+ Serial.print("Read control command from Server ... connecting to ");
+ Serial.println(host);
+
+// if there's incoming data from the net connection.
+  // send it out the serial port.  This is for debugging
+  // purposes only:
+ 
+client.stop();
+delay(1000);
+ 
+//EthernetClient client;
+
+if (client.connect(host, 80)) 
+  {
+    Serial.println("reconnecting...");
+          
+         url = "/api/readLast/IOT_API_KEY_BY_ADMIN/98/dfwc93452v3t";
+         //url = "/api/readLast/IOT_API_KEY_BY_ADMIN/59/CTN-001";
+         Serial.print("Requesting URL: ");
+         Serial.println(url);
+    
+         client.print(String("GET ") + url + " HTTP/1.1\r\n" +
+                 "Host: " + host + "\r\n" + 
+                 "Connection: close\r\n\r\n");
+         delay(2000);
+         
+         String section="header";
+         
+         while(client.available())
+         {
+            //Serial.println("Connection available ");
+            String line = client.readStringUntil('\r');
+            //Serial.print(line);
+            // we’ll parse the HTML body here
+            if (section=="header") 
+              { // headers..
+           
+                  if (line=="\n") 
+                    { // skips the empty space at the beginning 
+                      section="json";
+                    }
+              }
+            else if (section=="json") 
+              {  // print the good stuff
+                  section="ignore";
+                  String result = line.substring(1);
+                             
+                  // Parse JSON
+                  int size = result.length() + 1;
+                  char json[size];
+                  result.toCharArray(json, size);
+                  StaticJsonBuffer<1700> jsonBuffer;
+                  JsonObject& json_parsed = jsonBuffer.parseObject(json);
+                  if (!json_parsed.success())
+                    {
+                      Serial.println("parseObject() failed");
+                      return;
+                    }
+                      Serial.println("parseObject() OK ...");
+                      Serial.println(result); // show all json found
+                      //String led = json_parsed["led"][0]["status"];
+                     
+                      String master_state = json_parsed["result"]["deviceData"]["master_status"];
+                      String led1 = json_parsed["result"]["deviceData"]["data1"];
+                      String led2 = json_parsed["result"]["deviceData"]["data2"];
+                      String led3 = json_parsed["result"]["deviceData"]["data3"];
+                      
+                      
+                      // string led = json_parsed["table name""][array number]["value of field"]
+                      Serial.println("Read control led 1, 2, 3 ...");
+                      Serial.println(led1);
+                      Serial.println(led2);
+                      Serial.println(led3);
+                              
+             } // if found json
+          } // end while client available
+          
+    }
+    // end if host connected
+   
+    else 
+    {
+      // if you couldn't make a connection:
+      Serial.println("connection failed read server 2");
+    }
+   
+  client.stop();
+  delay(1000);
+
+}
+// ==  end read control from server ===
+
+void saveSystemStatusToServer()
+{
+    /////  prepare variable of data for upload to server //////
+  
+   String url = "/api/insertData?device_id=" + String(dID)+"&code="+String(code)+"&data1=" +String(data1) +"&data2="
+   + String(data2)+"&data3=" +String(data3)+"&data4=" +String(data4)+"&data5=" +String(data5)
+   +"&data6=" +String(data6)+"&data7=" +String(data7)+"&data8=" +String(data8)+"&data9=" +String(data9)
+   +"&data10=" +String(data10)+"&data11=" +String(data11)+"&data12=" +String(data12)+"&data13=" +String(data13)
+   +"&data14=" +String(data14)+"&data15=" +String(data15)+"&data16=" +String(data16)+"&data17=" +String(data17)
+   +"&data18=" +String(data18)+"&data19=" +String(data19)+"&data20=" +String(data20);   
+           
+   Serial.print("Resquesting URL: ");
+   Serial.println(url);
+
+  
+    delay(1000);
+      // if there's a successful connection:
+    
+    //EthernetClient client;
+    delay(1000);
+    /*if (millis() - lastConnectionTime > postingInterval) 
+    {
+    */
+      
+      if (client.connect(host, 80)) 
+        {
+           Serial.println("Data submitting to server  ... waiting...");
+           client.println(String("GET ") + url + " HTTP/1.1\r\n" + 
+                         "Host: " + host + "\r\n" +
+                         "Connection: close\r\n\r\n");
+        
+           //client.println("Connection: close");
+           Serial.println("Data saved completed..");
+        
+        } 
+        else 
+        {
+          // if you couldn't make a connection:
+          Serial.println("connection failed 2 ");
+        }
+    
+        while(client.available())
+              {
+              String line = client.readStringUntil('\r');
+              Serial.print(line);
+              }
+    /*
+     }
+     */
+    client.stop();
+    Serial.println("closing connection");
+
+}
+
+///////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////
+void printdata_Serial()
+{
+  Serial.print("Data6 : ");
+  Serial.print(data6);
+  Serial.print("Data7 : ");
+  Serial.print(data7);
+  Serial.print("Data8 : ");
+  Serial.print(data8);
+  Serial.print("Data9 : ");
+  Serial.print(data9);
+  Serial.print("Data10 : ");
+  Serial.print(data10);
+    
+}
+void loop()
+{
+  
+  runSystem();   //ระบบเริ่มทำงาน 
+  /// get time
+  DateTime now = rtc.now();
+  gettime();
+  // display time 
+  //Serial.print("Minute: "); New_post_time = Controllino_GetMinute(); Serial.println(New_post_time);
+  Serial.print("Minute: "); New_post_time = now.minute(); Serial.println(New_post_time);
+  Time_check = New_post_time - post_time;
+  if(Time_check < 0)
+  {
+    Time_check = New_post_time+60;  // add 60 minutes to get positive value
+    Time_check = Time_check - New_post_time;
+  }
+  Serial.print("Minute: ");
+  Serial.println(Time_check);
+  //
+  if (Time_check < post_duration)
+  {
+  Serial.println("No posting....");
+  delay(1000);
+  //resetFunc(); 
+  }
+  else
+  {
+  Serial.println("Continue millis()...");
+  getdata();
+  saveSystemStatusToServer();
+  DateTime now = rtc.now();
+  post_time = now.minute();
+  }
+  printdata_Serial();
+  display_LCD_data();
+  resetdata();
+}
+
+//////////////////////////////////////  end loop  /////////
+///////////////////////////////////////////////////////////
+void getdata()
+{
+  data8 = data8 + Time_check;
+  data9 = data9 + Time_check;
+  data10 = data10 - Time_check;
+}
+void resetdata()
+{
+  data8 = 32;
+  data9 = 35;
+  data10 = 33;
+ 
+}
+void runSystem()
+{
+  int workMode = scan_WorkMode();
+  switch (workMode) {
+    case 0 :
+      Serial.println("Modeselect in OFF Mode");
+      runMode_Off();
+      break;
+    case 1 :
+      Serial.println("Now step in Modeselect Manual Mode ...");
+      runMode_Manual();
+      break;
+    case 2 :
+      Serial.println("Now step in Modeselect Auto Mode ...");
+      runMode_Auto();
+      break;
+  }
+  
+  scanAllSensor();
+  //readControlCommandFromServer();
+  delay(1000);
+  //readControlCommandFromServer_2();
+//  scanSensor_Box_Temperature();
+  
+  scanSensor_Energy();
+  displayToLCD_Energy();
+  CalculateFlow2();
+}
+
+//////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////
+
+void initializeAllSensorStatus()
+{
+  initializeSensorStatus_Energy();
+  initializeSensorStatus_Flowrate();
+  initializeSensorStatus_pH();
+  initializeSensorStatus_EC();
+}
+
+void initializeSensorStatus_Energy()
+{
+}
+
+void initializeSensorStatus_Flowrate()
+{
+}
+
+void initializeSensorStatus_pH()
+{
+}
+
+void initializeSensorStatus_EC()
+{
+}
+
+
+void runMode_Auto()
+{
+  doModeAuto_Start();
+  doModeAuto_Operate();
+  doModeAuto_Complete();
+}
+
+void doModeAuto_Start()
+{
+  initializeAllSensorStatus();
+}
+
+void doModeAuto_Operate()
+{
+  readControlCommandFromServer();
+  scanAllSensor();
+  displayAllSystemStatus();
+//saveSystemStatusToDataLogger();
+  saveSystemStatusToServer();
+//  resetAlarmMessage();
+}
+
+void doModeAuto_Complete()
+{
+}
+
+void doModeManual_Start()
+{
+  initializeAllSensorStatus();
+}
+
+void doModeManual_Operate()
+{
+  scanAllSensor();
+  displayAllSystemStatus();
+//  saveSystemStatusToDataLogger();
+  saveSystemStatusToServer();
+}
+
+void doModeManual_Complete()
+{
+}
+
+void runMode_Manual()
+{
+  doModeManual_Start();
+  doModeManual_Operate();
+  doModeManual_Complete();
+}
+
+void runMode_Off()
+{
+   doModeOff_Start();
+   doModeOff_Operate();
+   doModeOff_Complete();
+}
+
+void doModeOff_Start()
+{
+  initializeAllSensorStatus();
+}
+
+void doModeOff_Operate()
+{
+  scanAllSensor();
+  displayAllSystemStatus();
+//  saveSystemStatusToDataLogger(); 
+  saveSystemStatusToServer();
+}
+
+void doModeOff_Complete()
+{
+  displayAllSystemStatus();
+}
+void CalculateFlow2()
+  {
+  if (millis()-FlowCalculationStartTime > FlowCalculationDuration)
+    {
+    LPM = PulseCount/(2*FlowMeterPulsePerSecondPerLiter*(FlowCalculationDuration/1000));
+    DisplayLPM();
+    FlowCalculationStartTime = millis();
+    PulseCount=0;
+    }
+  }
+    
+void pulseCounter2()
+  {
+  PulseCount++;
+  }
+  
+void DisplayLPM()
+  {
+  Serial.println(LPM,LPMdecimal);
+  }
+
+/////////////////////////// end  /////////////
+//
+void gettime()
+{
+    DateTime now = rtc.now();
+    Serial.println("Time stamp : ");
+    Serial.print(now.year(), DEC);
+    Serial.print('/');
+    Serial.print(now.month(), DEC);
+    Serial.print('/');
+    Serial.print(now.day(), DEC);
+    Serial.print(' ');
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    Serial.print(now.second(), DEC);
+    Serial.println();
+}
+//
+void SwitchOnRaspberryPi()
+{
+  digitalWrite(RaspberryPin,LOW);
+}
+void AM2315_loop() 
+{
+  float temperature, humidity;
+
+  if (! am2315.readTemperatureAndHumidity(&temperature, &humidity)) {
+    Serial.println("Failed to read data from AM2315");
+    return;
+  }
+  Serial.print("Temp *C: "); Serial.println(temperature);
+  Serial.print("Hum %: "); Serial.println(humidity);
+  delay(2000);
+  data6 = temperature;
+  data7 = humidity;
+}
