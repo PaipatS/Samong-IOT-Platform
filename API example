@@ -1,0 +1,16 @@
+To Insert data call 
+
+url = "/api/insertData?device_id=" + String(iddevice)+"&code="+String(ccode)+"&data1=" +String(data1) +"&data2="
+   + String(data2)+"&data3=" +String(data3)+"&data4=" +String(data4)+"&data5=" +String(data5)
+   +"&data6=" +String(data6)+"&data7=" +String(data7)+"&data8=" +String(data8)+"&data9=" +String(data9)
+   +"&data10=" +String(data10)+"&data11=" +String(data11)+"&data12=" +String(data12)+"&data13=" +String(data13)
+   +"&data14=" +String(data14)+"&data15=" +String(data15)+"&data16=" +String(data16)+"&data17=" +String(data17)
+   +"&data18=" +String(data18)+"&data19=" +String(data19)+"&data20=" +String(data20);
+
+To get downlink from server
+
+url = "/api/getRealyStatus/"+String(dID)+"/"+String(code)+"/"+"abZYrshRYR243askdSKSKSK5646dkfmTURDsand";
+
+Remarks : 
+1. iddevice = id when you register device, ccode = device code as your choice when you register the device.
+2. data 1 to data 20 is data set from your device operation
